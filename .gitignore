@@ -1,0 +1,30 @@
+# 敏感信息
+.env
+.env.backup
+*_secret
+
+# 用户订阅信息
+conf/config.yaml
+conf/cache.db
+
+# 日志文件
+logs/*.log
+
+# 临时文件
+temp/*.yaml
+temp/*.yml
+temp/*.txt
+temp/clash_config.yaml
+
+# 工具输出
+tools/subconverter/output.yml
+tools/subconverter/pref.toml
+
+# 系统文件
+.DS_Store
+*.swp
+*.swo
+*~
+
+# 编译的二进制文件（如果需要分发，可以注释掉）
+# bin/clash-*
