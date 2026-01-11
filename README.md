@@ -1,210 +1,187 @@
-[TOC]
+# Clash for Linux - 增强版
 
-# 项目介绍
+基于 [wnlen/clash-for-linux](https://github.com/wnlen/clash-for-linux) 的增强版本，添加了自动化配置和订阅管理功能。
 
-此项目是通过使用开源项目[clash](https://github.com/Dreamacro/clash)作为核心程序，再结合脚本实现简单的代理功能。
+## ✨ 新增功能
 
-主要是为了解决我们在服务器上下载GitHub等一些国外资源速度慢的问题。
+### 🎯 自动化配置脚本 (`auto_proxy.sh`)
 
-<br>
+一个强大的交互式脚本，自动化完成 Clash 的配置和管理：
 
-# 使用须知
+#### 主要特性：
 
-- 运行本项目建议使用root用户，或者使用 sudo 提权。
-- 使用过程中如遇到问题，请优先查已有的 [issues](https://github.com/wanhebin/clash-for-linux/issues)。
-- 在进行issues提交前，请替换提交内容中是敏感信息（例如：订阅地址）。
-- 本项目是基于 [clash](https://github.com/Dreamacro/clash) 、[yacd](https://github.com/haishanh/yacd) 进行的配置整合，关于clash、yacd的详细配置请去原项目查看。
-- 此项目不提供任何订阅信息，请自行准备Clash订阅地址。
-- 运行前请手动更改`.env`文件中的`CLASH_URL`变量值，否则无法正常运行。
-- 当前在RHEL系列和Debian系列Linux系统中测试过，其他系列可能需要适当修改脚本。
-- 支持 x86_64/aarch64 平台
+1. **📋 订阅管理**
+   - 支持多个订阅地址保存和切换
+   - 自动验证订阅地址有效性
+   - 显示流量使用情况和过期时间
+   - 支持添加、选择、删除订阅
 
-> **注意**：当你在使用此项目时，遇到任何无法独自解决的问题请优先前往 [Issues](https://github.com/wanhebin/clash-for-linux/issues) 寻找解决方法。由于空闲时间有限，后续将不再对Issues中 “已经解答”、“已有解决方案” 的问题进行重复性的回答。
+2. **🔐 自动化 Secret 管理**
+   - 自动捕获并保存 Secret
+   - 持久化存储到 `~/.clash_secret`
+   - 自动加载到 `.bashrc`，下次登录自动可用
 
-<br>
+3. **🌐 智能节点选择**
+   - 显示所有可用代理节点
+   - 显示节点延迟信息
+   - 支持多种配置文件格式
+   - 交互式选择节点
 
-# 使用教程
+4. **⚙️ 代理模式选择**
+   - Rule - 规则模式（根据规则自动选择）
+   - Global - 全局代理（所有流量走代理）
+   - Direct - 直连模式（所有流量直连）
 
-## 下载项目
+5. **✅ 连接测试**
+   - 自动测试 Google 连接
+   - 显示响应时间
+   - 失败时提供重试选项
 
-下载项目
+## 🚀 快速开始
 
-```bash
-$ git clone https://github.com/wnlen/clash-for-linux.git
-```
-
-进入到项目目录，编辑`.env`文件，修改变量`CLASH_URL`的值。
-
-```bash
-$ cd clash-for-linux
-$ vim .env
-```
-
-> **注意：** `.env` 文件中的变量 `CLASH_SECRET` 为自定义 Clash Secret，值为空时，脚本将自动生成随机字符串。
-
-<br>
-
-## 启动程序
-
-直接运行脚本文件`start.sh`
-
-- 进入项目目录
+### 安装
 
 ```bash
-$ cd clash-for-linux
+git clone https://github.com/YOUR_USERNAME/clash-for-linux.git
+cd clash-for-linux
 ```
 
-- 运行启动脚本
+### 使用自动化脚本
 
 ```bash
-$ sudo bash start.sh
-
-正在检测订阅地址...
-Clash订阅地址可访问！                                      [  OK  ]
-
-正在下载Clash配置文件...
-配置文件config.yaml下载成功！                              [  OK  ]
-
-正在启动Clash服务...
-服务启动成功！                                             [  OK  ]
-
-Clash Dashboard 访问地址：http://<ip>:9090/ui
-Secret：xxxxxxxxxxxxx
-
-请执行以下命令加载环境变量: source /etc/profile.d/clash.sh
-
-请执行以下命令开启系统代理: proxy_on
-
-若要临时关闭系统代理，请执行: proxy_off
-
+sudo bash auto_proxy.sh
 ```
+
+脚本会引导你完成：
+1. 订阅地址管理（添加、选择、删除）
+2. 自动启动 Clash 服务
+3. 选择代理节点
+4. 选择代理模式
+5. 测试连接
+
+### 传统使用方式
+
+仍然支持原有的使用方式：
 
 ```bash
-$ source /etc/profile.d/clash.sh
-$ proxy_on
+# 编辑配置
+vim .env
+
+# 启动服务
+sudo bash start.sh
+
+# 加载环境变量
+source /etc/profile.d/clash.sh
+proxy_on
+
+# 停止服务
+sudo bash shutdown.sh
+proxy_off
 ```
 
-- 检查服务端口
+## 📖 使用示例
+
+### 订阅管理界面
+
+```
+已保存的订阅列表：
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+[1] 订阅A
+    流量: 25.86GB/300.00GB (剩余274.14GB)
+    过期: 2026-03-12 14:36:43
+    [当前使用]
+
+[2] 订阅B
+    流量: 50.00GB/500.00GB (剩余450.00GB)
+    过期: 2026-04-01 23:59:59
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+[0] 添加新的订阅地址
+[d] 删除订阅（输入 d[编号]，如 d1）
+
+请选择订阅 [0-2] 或 d[编号]删除 或直接回车:
+```
+
+### 节点选择
+
+```
+可用的代理节点：
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+[1] 香港节点1 (150ms)
+[2] 美国节点1 (250ms)
+[3] 日本节点1 (100ms)
+[4] 新加坡节点1 (80ms)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+请选择代理节点编号 [1-4] (直接回车跳过):
+```
+
+## 🔧 高级功能
+
+### 手动测试代理
 
 ```bash
-$ netstat -tln | grep -E '9090|789.'
-tcp        0      0 127.0.0.1:9090          0.0.0.0:*               LISTEN     
-tcp6       0      0 :::7890                 :::*                    LISTEN     
-tcp6       0      0 :::7891                 :::*                    LISTEN     
-tcp6       0      0 :::7892                 :::*                    LISTEN
+# 测试 HTTP 代理
+curl -x http://127.0.0.1:7890 https://www.google.com
+
+# 测试 HTTPS 代理
+curl -x http://127.0.0.1:7890 https://www.youtube.com
+
+# 查看当前 IP
+curl -x http://127.0.0.1:7890 https://api.ip.sb/ip
 ```
 
-- 检查环境变量
+### 环境变量管理
 
 ```bash
-$ env | grep -E 'http_proxy|https_proxy'
-http_proxy=http://127.0.0.1:7890
-https_proxy=http://127.0.0.1:7890
+# 开启系统代理
+proxy_on
+
+# 关闭系统代理
+proxy_off
+
+# 查看代理状态
+env | grep -E 'http_proxy|https_proxy'
 ```
 
-以上步鄹如果正常，说明服务clash程序启动成功，现在就可以体验高速下载github资源了。
-
-<br>
-
-## 重启程序
-
-如果需要对Clash配置进行修改，请修改 `conf/config.yaml` 文件。然后运行 `restart.sh` 脚本进行重启。
-
-> **注意：**
-> 重启脚本 `restart.sh` 不会更新订阅信息。
-
-<br>
-
-## 停止程序
-
-- 进入项目目录
-
-```bash
-$ cd clash-for-linux
-```
-
-- 关闭服务
-
-```bash
-$ sudo bash shutdown.sh
-
-服务关闭成功，请执行以下命令关闭系统代理：proxy_off
+### 访问 Dashboard
 
 ```
-
-```bash
-$ proxy_off
+http://127.0.0.1:9090/ui
 ```
 
-然后检查程序端口、进程以及环境变量`http_proxy|https_proxy`，若都没则说明服务正常关闭。
+## 📁 文件说明
 
+- `auto_proxy.sh` - 自动化配置脚本（新增）
+- `start.sh` - 启动 Clash 服务
+- `shutdown.sh` - 停止 Clash 服务
+- `restart.sh` - 重启 Clash 服务
+- `.env` - 配置文件
+- `conf/config.yaml` - Clash 配置文件
+- `~/.clash_secret` - 保存的 Secret（自动生成）
+- `~/.clash_subscriptions` - 保存的订阅信息（自动生成）
 
-<br>
+## 🛡️ 安全提示
 
-## Clash Dashboard
+- `.env` 文件包含订阅地址，已自动添加到 `.gitignore`
+- Secret 保存在用户目录，权限为 600
+- 订阅信息保存在 `~/.clash_subscriptions`，权限为 600
 
-- 访问 Clash Dashboard
+## 🤝 贡献
 
-通过浏览器访问 `start.sh` 执行成功后输出的地址，例如：http://192.168.0.1:9090/ui
+基于 [wnlen/clash-for-linux](https://github.com/wnlen/clash-for-linux) 项目。
 
-- 登录管理界面
+### 主要改进：
+- 添加自动化配置脚本
+- 订阅管理功能
+- Secret 持久化
+- 智能节点选择
+- 连接测试
 
-在`API Base URL`一栏中输入：http://\<ip\>:9090 ，在`Secret(optional)`一栏中输入启动成功后输出的Secret。
+## 📄 许可证
 
-点击Add并选择刚刚输入的管理界面地址，之后便可在浏览器上进行一些配置。
+与原项目保持一致。
 
-- 更多教程
+## ⚠️ 免责声明
 
-此 Clash Dashboard 使用的是[yacd](https://github.com/haishanh/yacd)项目，详细使用方法请移步到yacd上查询。
-
-
-<br>
-
-## 设置代理
-1. 开启 IP 转发
-
-```bash
-echo "net.ipv4.ip_forward = 1" | sudo tee -a /etc/sysctl.conf
-sudo sysctl -p
-```
-
-2.配置iptables
-```bash
-# 先清空旧规则
-sudo iptables -t nat -F
-
-# 允许本机访问代理端口
-sudo iptables -t nat -A OUTPUT -p tcp --dport 7890 -j RETURN
-sudo iptables -t nat -A OUTPUT -p tcp --dport 7891 -j RETURN
-sudo iptables -t nat -A OUTPUT -p tcp --dport 7892 -j RETURN
-
-# 让所有 TCP 流量通过 7892 代理
-sudo iptables -t nat -A PREROUTING -p tcp -j REDIRECT --to-ports 7892
-
-# 保存规则
-sudo iptables-save | sudo tee /etc/iptables.rules
-```
-
-3. 让 iptables 规则开机生效
-在 `/etc/rc.local`（或 `/etc/rc.d/rc.local`）加上：
-
-```bash
-#!/bin/bash
-iptables-restore < /etc/iptables.rules
-exit 0
-```
-
-```bash
-sudo chmod +x /etc/rc.local
-```
-
-
-# 常见问题
-
-1. 部分Linux系统默认的 shell `/bin/sh` 被更改为 `dash`，运行脚本会出现报错（报错内容一般会有 `-en [ OK ]`）。建议使用 `bash xxx.sh` 运行脚本。
-
-2. 部分用户在UI界面找不到代理节点，基本上是因为厂商提供的clash配置文件是经过base64编码的，且配置文件格式不符合clash配置标准。
-
-   目前此项目已集成自动识别和转换clash配置文件的功能。如果依然无法使用，则需要通过自建或者第三方平台（不推荐，有泄露风险）对订阅地址转换。
-   
-3. 程序日志中出现`error: unsupported rule type RULE-SET`报错，解决方法查看官方[WIKI](https://github.com/Dreamacro/clash/wiki/FAQ#error-unsupported-rule-type-rule-set)
+本项目仅供学习交流使用，请遵守当地法律法规。
