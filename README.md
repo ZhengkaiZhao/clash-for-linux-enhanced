@@ -42,7 +42,7 @@
 ### 安装
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/clash-for-linux.git
+git clone https://github.com/ZhengkaiZhao/clash-for-linux-enhanced.git
 cd clash-for-linux
 ```
 
