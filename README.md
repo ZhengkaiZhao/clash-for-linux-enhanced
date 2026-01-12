@@ -43,7 +43,7 @@
 
 ```bash
 git clone https://github.com/ZhengkaiZhao/clash-for-linux-enhanced.git
-cd clash-for-linux
+cd clash-for-linux-enhanced
 ```
 
 ### 使用自动化脚本
