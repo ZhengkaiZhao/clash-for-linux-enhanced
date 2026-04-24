@@ -7,6 +7,7 @@
 ### 🆕 2026-04 更新（`start.sh` 交互增强）
 
 - `start.sh` 现为推荐入口：支持启动前自动清理遗留代理状态和残留进程。
+- 新增 `shell_proxy.sh`：可从 `~/.bashrc` 引入，自动检测 Clash 是否运行；运行时为终端/Codex/Git 注入 `http_proxy` / `https_proxy`，关闭后自动清除代理环境变量。
 - 订阅管理支持命名、切换、删除，并在切换前验证有效性与流量/过期信息。
 - 节点选择支持延迟展示，要求明确选择节点（仅一个可用节点时自动选择）。
 - 新增代理策略选择：
@@ -79,13 +80,13 @@ ps:第一次连接可能出现找不到订阅选项，确保链接正确的前�
 
 ```bash
 # 编辑配置
+cp .env.example .env
 vim .env
 
 # 启动服务
 source start.sh
 
-# 加载环境变量
-source /etc/profile.d/clash.sh
+# 可选：手动控制当前终端代理
 proxy_on
 
 # 停止服务
@@ -164,6 +165,9 @@ cat ~/.clash_secret
 ### 环境变量管理
 
 ```bash
+# 自动同步当前终端代理状态（推荐写入 ~/.bashrc）
+source /path/to/clash-for-linux-enhanced/shell_proxy.sh
+
 # 开启系统代理
 proxy_on
 
@@ -184,10 +188,12 @@ http://127.0.0.1:9090/ui
 
 - `auto_proxy.sh` - 自动化配置脚本（新增）
 - `start.sh` - 启动 Clash 服务
+- `shell_proxy.sh` - 终端代理自动同步脚本
 - `shutdown.sh` - 停止 Clash 服务
 - `restart.sh` - 重启 Clash 服务
-- `.env` - 配置文件
-- `conf/config.yaml` - Clash 配置文件
+- `.env.example` - 配置模板
+- `.env` - 本地配置文件（不提交）
+- `conf/config.yaml` - Clash 运行配置文件（不提交）
 - `~/.clash_secret` - 保存的 Secret（自动生成）
 - `~/.clash_subscriptions` - 保存的订阅信息（自动生成）
 
