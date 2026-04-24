@@ -4,6 +4,18 @@
 
 ## ✨ 新增功能
 
+### 🆕 2026-04 更新（`start.sh` 交互增强）
+
+- `start.sh` 现为推荐入口：支持启动前自动清理遗留代理状态和残留进程。
+- 订阅管理支持命名、切换、删除，并在切换前验证有效性与流量/过期信息。
+- 节点选择支持延迟展示，要求明确选择节点（仅一个可用节点时自动选择）。
+- 新增代理策略选择：
+   - 系统代理（System Proxy + Rule）
+   - 全局代理（System Proxy + Global）
+   - 直连模式（关闭系统代理 + Direct）
+- API 鉴权失败（`Unauthorized`）时，会自动尝试读取当前 `config.yaml` 的 `secret` 重试。
+- 启动末尾自动执行 `curl -x` 代理连通测试，并输出内容特征判定结果（Google 页面特征）。
+
 ### 🎯 自动化配置脚本 (`auto_proxy.sh`)
 
 一个强大的交互式脚本，自动化完成 Clash 的配置和管理：
@@ -70,7 +82,7 @@ ps:第一次连接可能出现找不到订阅选项，确保链接正确的前�
 vim .env
 
 # 启动服务
-sudo bash start.sh
+source start.sh
 
 # 加载环境变量
 source /etc/profile.d/clash.sh
@@ -80,6 +92,8 @@ proxy_on
 sudo bash shutdown.sh
 proxy_off
 ```
+
+说明：`start.sh` 需要使用 `source`（或 `. start.sh`）执行，才能在当前 Shell 中正确应用和清理代理环境变量。
 
 ## 📖 使用示例
 
@@ -131,6 +145,20 @@ curl -x http://127.0.0.1:7890 https://www.youtube.com
 
 # 查看当前 IP
 curl -x http://127.0.0.1:7890 https://api.ip.sb/ip
+```
+
+### API 鉴权排查
+
+当代理 `curl -x` 成功但 API 测试失败时，通常是 `secret` 不一致导致：
+
+- 代理测试走的是 `7890` 端口的数据转发链路；
+- API 测试走的是 `9090` 控制面链路，必须携带正确 `secret`。
+
+脚本已内置自动回退重试逻辑；若仍失败，可查看：
+
+```bash
+grep -E '^secret:' conf/config.yaml
+cat ~/.clash_secret
 ```
 
 ### 环境变量管理
