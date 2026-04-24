@@ -61,7 +61,7 @@ cd clash-for-linux-enhanced
 ### 使用自动化脚本
 
 ```bash
-sudo bash auto_proxy.sh
+source ./start.sh
 ```
 
 脚本会引导你完成：
