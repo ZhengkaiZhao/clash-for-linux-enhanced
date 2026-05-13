@@ -386,7 +386,16 @@ manage_subscriptions() {
             return 0
         fi
 
-        echo -e "  \033[33m[!] 当前未发现可用订阅记录，需要添加新订阅\033[0m"
+        echo -e "  [33m[!] 当前未发现可用订阅记录[0m"
+        export USE_LOCAL_CONFIG=false
+        if [[ -f "$Conf_Dir/config.yaml" ]]; then
+            read_tty use_local "[35m检测到本地已存在 config.yaml，是否直接使用？ [Y/n]: [0m" || return 1
+            if [[ -z "$use_local" || "$use_local" =~ ^[Yy]$ ]]; then
+                export USE_LOCAL_CONFIG=true
+                echo -e "  [32m[√] 已选择使用本地 config.yaml[0m"
+                return 0
+            fi
+        fi
         add_new_subscription || return 1
         return 0
     fi
@@ -408,9 +417,12 @@ manage_subscriptions() {
     echo -e "\033[36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
     echo -e "[0] 添加新订阅"
     echo -e "[dN] 删除订阅（例如 d1）"
+    if [[ -f "$Conf_Dir/config.yaml" ]]; then
+        echo -e "[L] 本地模式：跳过在线获取，直接使用本地 config.yaml"
+    fi
 
     while true; do
-        read_tty selection "\033[35m请选择订阅 [1-${#sub_urls[@]}] / 0 / dN (回车保持当前): \033[0m" || return 1
+        read_tty selection "[35m请选择订阅 [1-${#sub_urls[@]}] / 0 / dN / L (回车保持当前): [0m" || return 1
 
         if [[ -z "$selection" ]]; then
             if [[ "$current_valid" == true ]]; then
@@ -424,6 +436,12 @@ manage_subscriptions() {
 
         if [[ "$selection" == "0" ]]; then
             add_new_subscription || return 1
+            return 0
+        fi
+
+        if [[ "${selection,,}" == "l" ]] && [[ -f "$Conf_Dir/config.yaml" ]]; then
+            export USE_LOCAL_CONFIG=true
+            echo -e "[32m✓ 切换为本地模式，将使用现有的 config.yaml[0m"
             return 0
         fi
 
@@ -974,6 +992,20 @@ fi
 
 
 ## 步骤 4: 下载 Clash 订阅配置并生成配置文件
+if [[ "$USE_LOCAL_CONFIG" == "true" ]]; then
+    echo -e "\n\033[33m[4/8] 使用本地代理配置...\033[0m"
+    echo -e "  \033[32m[√] 已跳过订阅下载，直接加载 Conf_Dir/config.yaml\033[0m"
+    
+    if [[ "$EXTERNAL_CONTROLLER_ENABLED" == "true" ]]; then
+        Work_Dir=$(cd $(dirname ${BASH_SOURCE[0]}); pwd)
+        Dashboard_Dir="${Work_Dir}/dashboard/public"
+        sed -ri "s@^# external-ui:.*@external-ui: ${Dashboard_Dir}@g" $Conf_Dir/config.yaml
+    fi
+    if ! ensure_config_secret "$Conf_Dir/config.yaml" "$Secret"; then
+        echo -e "\033[31m[ERROR] 写入 config.yaml 的 secret 失败\033[0m"
+        return 1
+    fi
+else
 echo -e "\n\033[33m[4/8] 检测订阅地址并下载配置...\033[0m"
 Text1="Clash 订阅地址可访问！"
 Text2="Clash 订阅地址不可访问！"
@@ -1049,6 +1081,9 @@ if ! ensure_config_secret "$Conf_Dir/config.yaml" "$Secret"; then
     return 1
 fi
 
+
+
+fi
 
 ## 步骤 5: 启动 Clash 进程
 echo -e "\n\033[33m[5/8] 启动 Clash 服务...\033[0m"
