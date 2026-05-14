@@ -589,7 +589,7 @@ proxies = payload.get("proxies", {})
 if not isinstance(proxies, dict):
     sys.exit(0)
 
-prefer_groups = ["GLOBAL", "Proxy", "PROXY", "Final", "final", "节点选择"]
+prefer_groups = ["Proxies", "Proxy", "PROXY", "节点选择", "GLOBAL", "Final", "final"]
 group = None
 
 for name in prefer_groups:
@@ -764,17 +764,19 @@ apply_proxy_mode() {
 enable_system_proxy_env() {
     export http_proxy="http://127.0.0.1:${CLASH_HTTP_PORT}"
     export https_proxy="http://127.0.0.1:${CLASH_HTTP_PORT}"
-    export no_proxy="127.0.0.1,localhost"
     export HTTP_PROXY="http://127.0.0.1:${CLASH_HTTP_PORT}"
     export HTTPS_PROXY="http://127.0.0.1:${CLASH_HTTP_PORT}"
-    export NO_PROXY="127.0.0.1,localhost"
+    export all_proxy="socks5h://127.0.0.1:${CLASH_SOCKS_PORT}"
+    export ALL_PROXY="socks5h://127.0.0.1:${CLASH_SOCKS_PORT}"
+    export no_proxy="127.0.0.1,localhost,::1"
+    export NO_PROXY="127.0.0.1,localhost,::1"
 
     SYSTEM_PROXY_STATE="已启用"
-    echo -e "✓ 系统代理环境变量已启用: http://127.0.0.1:${CLASH_HTTP_PORT}"
+    echo -e "✓ 系统代理环境变量已启用: http://127.0.0.1:${CLASH_HTTP_PORT} / socks5h://127.0.0.1:${CLASH_SOCKS_PORT}"
 }
 
 disable_system_proxy_env() {
-    unset http_proxy https_proxy no_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY
+    unset http_proxy https_proxy no_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY all_proxy ALL_PROXY
     SYSTEM_PROXY_STATE="已关闭"
     echo -e "✓ 系统代理环境变量已关闭"
 }
@@ -859,34 +861,124 @@ select_proxy_mode() {
 }
 
 test_proxy_connection() {
-    local test_url="https://www.google.com"
     local timeout=10
-    local http_code time_total retry
-    local content_snippet
+    local retry test_selection failed=0
+
+    run_proxy_test_url() {
+        local name="$1"
+        local url="$2"
+        local expected_re="$3"
+        local success_msg="${4:-HTTP 可达}"
+        local warn_403="${5:-false}"
+        local tmp_err curl_result http_code time_total ms retry_reason
+
+        tmp_err=$(mktemp) || return 1
+        curl_result=$(curl -sS -o /dev/null \
+            -w "%{http_code} %{time_total}" \
+            --connect-timeout "$timeout" --max-time "$timeout" \
+            -x "http://127.0.0.1:${CLASH_HTTP_PORT}" "$url" 2>"$tmp_err" || true)
+
+        if [[ "$curl_result" =~ ^([0-9]{3})[[:space:]]+([0-9.]+)$ ]]; then
+            http_code="${BASH_REMATCH[1]}"
+            time_total="${BASH_REMATCH[2]}"
+        else
+            http_code="000"
+            time_total="0"
+        fi
+
+        retry_reason=""
+        if ! [[ "$http_code" =~ $expected_re ]] && grep -Eqi 'SSL|TLS|unexpected eof|decode error' "$tmp_err"; then
+            retry_reason="TLS 1.2 fallback"
+            : > "$tmp_err"
+            curl_result=$(curl -sS -o /dev/null \
+                -w "%{http_code} %{time_total}" \
+                --tls-max 1.2 \
+                --connect-timeout "$timeout" --max-time "$timeout" \
+                -x "http://127.0.0.1:${CLASH_HTTP_PORT}" "$url" 2>"$tmp_err" || true)
+
+            if [[ "$curl_result" =~ ^([0-9]{3})[[:space:]]+([0-9.]+)$ ]]; then
+                http_code="${BASH_REMATCH[1]}"
+                time_total="${BASH_REMATCH[2]}"
+            else
+                http_code="000"
+                time_total="0"
+            fi
+        fi
+
+        ms=$(awk "BEGIN {printf \"%d\", $time_total * 1000}" 2>/dev/null || echo "?")
+
+        if [[ "$http_code" =~ $expected_re ]]; then
+            if [[ -n "$retry_reason" ]]; then
+                echo -e "✓ ${name} 测试通过：HTTP ${http_code}，响应时间: ${ms}ms，${success_msg}（${retry_reason}）"
+            else
+                echo -e "✓ ${name} 测试通过：HTTP ${http_code}，响应时间: ${ms}ms，${success_msg}"
+            fi
+            rm -f "$tmp_err"
+            return 0
+        fi
+
+        if [[ "$warn_403" == "true" && "$http_code" == "403" ]]; then
+            echo -e "\033[33m[!] ${name} 网络可达但服务拒绝当前节点：HTTP 403，响应时间: ${ms}ms\033[0m"
+            echo -e "\033[33m    这通常不是代理没走通，而是当前节点 IP/地区被 ChatGPT/OpenAI 拒绝。\033[0m"
+            rm -f "$tmp_err"
+            return 2
+        fi
+
+        echo -e "\033[33m[!] ${name} 测试未通过：HTTP ${http_code}，响应时间: ${ms}ms\033[0m"
+        if [[ -s "$tmp_err" ]]; then
+            echo -e "\033[33m    curl 错误: $(tail -1 "$tmp_err")\033[0m"
+        elif [[ "$http_code" == "000" ]]; then
+            echo -e "\033[33m    curl 未返回具体错误，常见原因是节点不可用、远端断开或 DNS 未经代理。\033[0m"
+        fi
+        rm -f "$tmp_err"
+        return 1
+    }
 
     echo -e "\n\033[33m[8/8] 正在测试代理连接...\033[0m"
-    echo -e "\n测试 Google 访问："
 
-    read -r http_code time_total < <(curl -s -o /dev/null \
-        -w "%{http_code} %{time_total}" \
-        --connect-timeout "$timeout" --max-time "$timeout" \
-        -x "http://127.0.0.1:${CLASH_HTTP_PORT}" "$test_url" 2>/dev/null || echo "000 0")
+    echo -e "\n可用测试目标："
+    echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo -e "[1] GPT/Codex 测试 - api.openai.com + chatgpt.com（推荐）"
+    echo -e "[2] Google 204 测试 - www.gstatic.com/generate_204"
+    echo -e "[3] 全部测试"
+    echo -e "[0] 跳过测试"
+    echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    read_tty test_selection "\033[35m请选择测试目标 [0-3] (直接回车默认 GPT/Codex): \033[0m" || return 1
+    [[ -z "$test_selection" ]] && test_selection=1
 
-    if [[ "$http_code" == "200" || "$http_code" == "301" || "$http_code" == "302" ]]; then
-        local ms
-        ms=$(awk "BEGIN {printf \"%d\", $time_total * 1000}" 2>/dev/null || echo "?")
-        content_snippet=$(curl -sL --connect-timeout "$timeout" --max-time "$timeout" \
-            -x "http://127.0.0.1:${CLASH_HTTP_PORT}" "$test_url" 2>/dev/null | head -c 2048)
+    case "$test_selection" in
+        0)
+            echo -e "\033[33m已跳过代理连接测试\033[0m"
+            return 0
+            ;;
+        1)
+            echo -e "\n测试 GPT/Codex 访问："
+            run_proxy_test_url "OpenAI API" "https://api.openai.com/v1/models" '^(200|401)$' "OpenAI API 可达（未带 API Key 返回 401 属正常）" true || failed=1
+            run_proxy_test_url "ChatGPT Web" "https://chatgpt.com/cdn-cgi/trace" '^(200)$' "ChatGPT Web 可达" true || failed=1
+            ;;
+        2)
+            echo -e "\n测试 Google 204 访问："
+            run_proxy_test_url "Google 204" "https://www.gstatic.com/generate_204" '^(204|200)$' "Google 204 探针可达" false || failed=1
+            ;;
+        3)
+            echo -e "\n测试全部目标："
+            run_proxy_test_url "OpenAI API" "https://api.openai.com/v1/models" '^(200|401)$' "OpenAI API 可达（未带 API Key 返回 401 属正常）" true || failed=1
+            run_proxy_test_url "ChatGPT Web" "https://chatgpt.com/cdn-cgi/trace" '^(200)$' "ChatGPT Web 可达" true || failed=1
+            run_proxy_test_url "Google 204" "https://www.gstatic.com/generate_204" '^(204|200)$' "Google 204 探针可达" false || failed=1
+            ;;
+        *)
+            echo -e "\033[31m无效输入，请输入 0-3\033[0m"
+            test_proxy_connection
+            return $?
+            ;;
+    esac
 
-        if echo "$content_snippet" | grep -Eqi '<title>[^<]*google[^<]*</title>|Google'; then
-            echo -e "✓ 代理连接成功！HTTP ${http_code}，响应时间: ${ms}ms，内容判定: Google 页面特征匹配"
-        else
-            echo -e "✓ 代理连接成功！HTTP ${http_code}，响应时间: ${ms}ms，内容判定: HTTP 可达（未匹配到 Google 标题）"
-        fi
+    if [[ "$failed" -eq 0 ]]; then
         return 0
     fi
 
-    echo -e "\033[33m[!] 代理连接测试未通过（状态: ${http_code}）\033[0m"
+    echo -e "\033[33m    可运行: ${Server_Dir}/clashctl.sh test 查看 Google/OpenAI/ChatGPT 分项诊断\033[0m"
+    echo -e "\033[33m    若 OpenAI/ChatGPT 返回 403，请切换到 TW/JP/SG/US 等非香港节点后重试\033[0m"
     read_tty retry "\033[35m是否重试测试? [y/N]: \033[0m" || return 1
     if [[ "$retry" =~ ^[Yy]$ ]]; then
         sleep 2
@@ -895,6 +987,89 @@ test_proxy_connection() {
     fi
 
     return 1
+}
+
+runtime_control_loop() {
+    local runtime_choice
+
+    while true; do
+        if [[ -z "${_CLASH_PID:-}" ]] || ! kill -0 "$_CLASH_PID" 2>/dev/null; then
+            echo -e "\n\033[31m[ERROR] Clash 进程已退出，请查看日志：tail -30 $Log_Dir/clash.log\033[0m"
+            _clash_cleanup
+            return 1
+        fi
+
+        echo -e "\n\033[36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+        echo -e "\033[36m运行中控制台\033[0m"
+        echo -e "\033[36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+        echo -e "[1] 重新选择代理节点"
+        echo -e "[2] 切换代理策略（Rule / Global / Direct）"
+        echo -e "[3] 重新测试 GPT/Codex / Google 连接"
+        echo -e "[4] 查看当前状态"
+        echo -e "[5] 查看可用策略组"
+        echo -e "[6] 查看当前策略组节点"
+        echo -e "[q] 退出 Clash 并清理代理"
+        echo -e "\033[36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
+
+        read_tty runtime_choice "\033[35m请选择操作 [1-6/q] (回车刷新菜单): \033[0m" || {
+            _clash_cleanup
+            return 1
+        }
+
+        case "$runtime_choice" in
+            "")
+                continue
+                ;;
+            1)
+                if [[ "$EXTERNAL_CONTROLLER_ENABLED" == "true" ]]; then
+                    get_and_select_proxy || true
+                else
+                    echo -e "\033[33m[!] External Controller 已禁用，无法运行中切换节点\033[0m"
+                fi
+                ;;
+            2)
+                if [[ "$EXTERNAL_CONTROLLER_ENABLED" == "true" ]]; then
+                    select_proxy_strategy || true
+                else
+                    echo -e "\033[33m[!] External Controller 已禁用，无法运行中切换模式\033[0m"
+                fi
+                ;;
+            3)
+                test_proxy_connection || true
+                ;;
+            4)
+                if [[ -x "$Server_Dir/clashctl.sh" ]]; then
+                    "$Server_Dir/clashctl.sh" status || true
+                else
+                    echo -e "PID: $_CLASH_PID"
+                    echo -e "HTTP 代理: http://127.0.0.1:${CLASH_HTTP_PORT}"
+                    echo -e "SOCKS 代理: socks5h://127.0.0.1:${CLASH_SOCKS_PORT}"
+                    echo -e "Dashboard: http://127.0.0.1:${CLASH_API_PORT}/ui"
+                fi
+                ;;
+            5)
+                if [[ -x "$Server_Dir/clashctl.sh" ]]; then
+                    "$Server_Dir/clashctl.sh" groups || true
+                else
+                    echo -e "\033[33m[!] clashctl.sh 不存在，无法查看策略组\033[0m"
+                fi
+                ;;
+            6)
+                if [[ -x "$Server_Dir/clashctl.sh" ]]; then
+                    "$Server_Dir/clashctl.sh" nodes "${SELECTOR_GROUP:-}" || true
+                else
+                    echo -e "\033[33m[!] clashctl.sh 不存在，无法查看节点\033[0m"
+                fi
+                ;;
+            q|Q|quit|exit)
+                _clash_cleanup
+                return 0
+                ;;
+            *)
+                echo -e "\033[31m无效输入，请输入 1-6 或 q\033[0m"
+                ;;
+        esac
+    done
 }
 
 # 退出清理函数（幂等，可由信号或正常流程调用）
@@ -919,7 +1094,7 @@ _clash_cleanup() {
     sudo pkill -f 'clash-linux' 2>/dev/null
 
     # 清除当前 Shell 的代理环境变量
-    unset http_proxy https_proxy no_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY
+    unset http_proxy https_proxy no_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY all_proxy ALL_PROXY
 
     # 清空 /etc/profile.d/clash.sh，避免新终端自动继承代理配置
     [[ -f /etc/profile.d/clash.sh ]] && { sudo tee /etc/profile.d/clash.sh < /dev/null > /dev/null 2>/dev/null || true; }
@@ -943,7 +1118,7 @@ check_root
 echo -e "\n\033[33m[1/8] 初始化：清理遗留代理配置...\033[0m"
 
 # 清除当前 Shell 可能残留的代理环境变量
-unset http_proxy https_proxy no_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY
+unset http_proxy https_proxy no_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY all_proxy ALL_PROXY
 echo -e "  已重置当前 Shell 代理环境变量"
 
 # 清空 /etc/profile.d/clash.sh 中残留的代理定义
@@ -1129,6 +1304,20 @@ fi
 
 save_secret_persist || return 1
 
+if [[ -r "$Server_Dir/shell_proxy.sh" ]]; then
+    for shell_rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
+        touch "$shell_rc" 2>/dev/null || continue
+        if ! grep -Fq "source \"$Server_Dir/shell_proxy.sh\"" "$shell_rc" 2>/dev/null; then
+            {
+                echo ""
+                echo "# Clash terminal proxy auto sync"
+                echo "[ -f \"$Server_Dir/shell_proxy.sh\" ] && source \"$Server_Dir/shell_proxy.sh\""
+            } >> "$shell_rc"
+        fi
+    done
+    echo -e "  \033[32m[√] 已安装 shell_proxy.sh 到 ~/.bashrc 和 ~/.zshrc，新终端会自动同步代理变量\033[0m"
+fi
+
 if [[ "$EXTERNAL_CONTROLLER_ENABLED" == "true" ]]; then
     if test_clash_api; then
         get_and_select_proxy || true
@@ -1165,15 +1354,14 @@ fi
 echo -e "\n\033[33m提示：\033[0m"
 echo -e "  - 使用 \033[36mproxy_on\033[0m  开启系统代理（若已定义）"
 echo -e "  - 使用 \033[36mproxy_off\033[0m 关闭系统代理（若已定义）"
-echo -e "  - 手动测试: \033[36mcurl -x http://127.0.0.1:${CLASH_HTTP_PORT} https://www.google.com\033[0m"
+echo -e "  - 使用 \033[36mclashctl status\033[0m 查看状态，\033[36mclashctl switch\033[0m 运行中切节点，\033[36mclashctl mode global\033[0m 切全局模式"
+echo -e "  - 若当前终端未加载函数: \033[36msource $Server_Dir/shell_proxy.sh\033[0m"
+echo -e "  - 手动测试: \033[36m${Server_Dir}/clashctl.sh test\033[0m"
+echo -e "  - 单项测试: \033[36mcurl -x http://127.0.0.1:${CLASH_HTTP_PORT} https://api.openai.com/v1/models\033[0m"
 
 echo -e "\n\033[36m============================================================\033[0m"
 echo -e "\033[32m  Clash 运行中，代理已激活\033[0m"
-echo -e "\033[32m  关闭此终端 或 按 Ctrl+C  →  退出 Clash + 自动清除代理\033[0m"
+echo -e "\033[32m  可在下方菜单中重新切节点/切模式；按 q 或 Ctrl+C 退出并清理代理\033[0m"
 echo -e "\033[36m============================================================\033[0m"
 
-## 前台等待 Clash 进程（阻塞当前终端，终端即进程生命周期）
-wait "$_CLASH_PID"
-
-# wait 返回后（Clash 自行退出或被信号中断），执行收尾清理
-_clash_cleanup
+runtime_control_loop
