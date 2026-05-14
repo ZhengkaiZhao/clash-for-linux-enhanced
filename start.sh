@@ -22,7 +22,9 @@ if [[ -f "$Server_Dir/.env" && ! -r "$Server_Dir/.env" ]]; then
         return 1
     }
 fi
-source $Server_Dir/.env
+if [[ -r "$Server_Dir/.env" ]]; then
+    source "$Server_Dir/.env"
+fi
 
 chmod +x $Server_Dir/bin/* 2>/dev/null
 chmod +x $Server_Dir/scripts/* 2>/dev/null
@@ -35,7 +37,7 @@ DOT_ENV_FILE="$Server_Dir/.env"
 SECRET_FILE="$HOME/.clash_secret"
 SUBSCRIPTION_FILE="$HOME/.clash_subscriptions"
 
-URL=${CLASH_URL:?Error: CLASH_URL variable is not set or empty}
+URL=${CLASH_URL:-}
 Secret=${CLASH_SECRET:-$(openssl rand -hex 32)}
 Secret=${Secret//$'\r'/}
 Secret=${Secret//$'\n'/}
@@ -55,6 +57,7 @@ SELECTED_PROXY=""
 PROXY_MODE=""
 SELECTOR_GROUP=""
 SYSTEM_PROXY_STATE="未设置"
+LOCAL_CONFIG_SOURCE=""
 
 #################### 颜色定义 ####################
 
@@ -119,6 +122,116 @@ read_tty() {
 
     printf "%b" "$__prompt" > /dev/tty
     IFS= read -r "$__var_name" < /dev/tty
+}
+
+ensure_runtime_dirs() {
+    mkdir -p "$Conf_Dir" "$Temp_Dir" "$Log_Dir" || {
+        echo -e "\033[31m[ERROR] 创建运行目录失败: $Conf_Dir / $Temp_Dir / $Log_Dir\033[0m"
+        return 1
+    }
+}
+
+list_local_config_candidates() {
+    local -a candidates=()
+    local path dir
+
+    for dir in "$Conf_Dir" "$Server_Dir/config" "$Server_Dir"; do
+        [[ -d "$dir" ]] || continue
+        while IFS= read -r path; do
+            [[ -f "$path" ]] && candidates+=("$path")
+        done < <(find "$dir" -maxdepth 1 -type f \( -iname '*.yaml' -o -iname '*.yml' \) 2>/dev/null | sort)
+    done
+
+    if [[ ${#candidates[@]} -eq 0 ]]; then
+        return 0
+    fi
+
+    printf '%s\n' "${candidates[@]}" | awk '!seen[$0]++'
+}
+
+validate_local_config_file() {
+    local source_file="$1"
+    local target_file="$2"
+    local clash_bin
+    local config_dir
+
+    [[ -f "$source_file" ]] || return 1
+
+    case "$CpuArch" in
+        *x86_64*|*amd64*)
+            clash_bin="$Server_Dir/bin/clash-linux-amd64"
+            ;;
+        *aarch64*|*arm64*)
+            clash_bin="$Server_Dir/bin/clash-linux-arm64"
+            ;;
+        *armv7*)
+            clash_bin="$Server_Dir/bin/clash-linux-armv7"
+            ;;
+        *)
+            echo -e "\033[31m[ERROR] 不支持的 CPU 架构: $CpuArch\033[0m"
+            return 1
+            ;;
+    esac
+
+    [[ -x "$clash_bin" ]] || {
+        echo -e "\033[31m[ERROR] Clash 可执行文件不存在: $clash_bin\033[0m"
+        return 1
+    }
+
+    if [[ "$(cd "$(dirname "$source_file")" && pwd)/$(basename "$source_file")" != "$(cd "$(dirname "$target_file")" && pwd)/$(basename "$target_file")" ]]; then
+        if ! \cp "$source_file" "$target_file"; then
+            echo -e "\033[31m[ERROR] 复制本地配置文件失败: $source_file\033[0m"
+            return 1
+        fi
+    fi
+
+    config_dir=$(dirname "$target_file")
+    if ! "$clash_bin" -d "$config_dir" -t >"$Log_Dir/config-check.log" 2>&1; then
+        echo -e "\033[31m[ERROR] 本地配置校验失败: $source_file\033[0m"
+        echo -e "\033[33m  tail -30 $Log_Dir/config-check.log\033[0m"
+        return 1
+    fi
+
+    return 0
+}
+
+select_local_config_file() {
+    local selection choice
+    local -a config_candidates=()
+
+    while IFS= read -r selection; do
+        [[ -n "$selection" ]] && config_candidates+=("$selection")
+    done < <(list_local_config_candidates)
+
+    if [[ ${#config_candidates[@]} -eq 0 ]]; then
+        echo -e "\033[31m[ERROR] 未找到可用本地配置文件。支持位置: conf/、config/ 或仓库根目录下的 .yaml/.yml 文件\033[0m"
+        return 1
+    fi
+
+    if [[ ${#config_candidates[@]} -eq 1 ]]; then
+        LOCAL_CONFIG_SOURCE="${config_candidates[0]}"
+        echo -e "  \033[32m[√] 已自动选择本地配置: ${LOCAL_CONFIG_SOURCE#$Server_Dir/}\033[0m"
+        return 0
+    fi
+
+    echo -e "\033[36m检测到多个本地配置文件：\033[0m"
+    local i
+    for ((i = 0; i < ${#config_candidates[@]}; i++)); do
+        echo -e "[$((i + 1))] ${config_candidates[$i]#$Server_Dir/}"
+    done
+
+    while true; do
+        read_tty choice "\033[35m请选择本地配置编号 [1-${#config_candidates[@]}]（回车默认 1）: \033[0m" || return 1
+        [[ -z "$choice" ]] && choice=1
+
+        if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#config_candidates[@]} )); then
+            LOCAL_CONFIG_SOURCE="${config_candidates[$((choice - 1))]}"
+            echo -e "  \033[32m[√] 已选择本地配置: ${LOCAL_CONFIG_SOURCE#$Server_Dir/}\033[0m"
+            return 0
+        fi
+
+        echo -e "\033[31m无效输入，请重试\033[0m"
+    done
 }
 
 extract_clash_url_from_env() {
@@ -388,11 +501,11 @@ manage_subscriptions() {
 
         echo -e "  [33m[!] 当前未发现可用订阅记录[0m"
         export USE_LOCAL_CONFIG=false
-        if [[ -f "$Conf_Dir/config.yaml" ]]; then
-            read_tty use_local "[35m检测到本地已存在 config.yaml，是否直接使用？ [Y/n]: [0m" || return 1
+        if [[ -n "$(list_local_config_candidates)" ]]; then
+            read_tty use_local "[35m检测到本地 .yaml/.yml 配置文件，是否直接使用？ [Y/n]: [0m" || return 1
             if [[ -z "$use_local" || "$use_local" =~ ^[Yy]$ ]]; then
                 export USE_LOCAL_CONFIG=true
-                echo -e "  [32m[√] 已选择使用本地 config.yaml[0m"
+                echo -e "  [32m[√] 已选择使用本地配置文件[0m"
                 return 0
             fi
         fi
@@ -417,8 +530,8 @@ manage_subscriptions() {
     echo -e "\033[36m━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\033[0m"
     echo -e "[0] 添加新订阅"
     echo -e "[dN] 删除订阅（例如 d1）"
-    if [[ -f "$Conf_Dir/config.yaml" ]]; then
-        echo -e "[L] 本地模式：跳过在线获取，直接使用本地 config.yaml"
+    if [[ -n "$(list_local_config_candidates)" ]]; then
+        echo -e "[L] 本地模式：选择本地 .yaml/.yml 配置并校验后启动"
     fi
 
     while true; do
@@ -439,9 +552,9 @@ manage_subscriptions() {
             return 0
         fi
 
-        if [[ "${selection,,}" == "l" ]] && [[ -f "$Conf_Dir/config.yaml" ]]; then
+        if [[ "${selection,,}" == "l" ]] && [[ -n "$(list_local_config_candidates)" ]]; then
             export USE_LOCAL_CONFIG=true
-            echo -e "[32m✓ 切换为本地模式，将使用现有的 config.yaml[0m"
+            echo -e "[32m✓ 切换为本地模式，将选择本地配置文件启动[0m"
             return 0
         fi
 
@@ -1117,6 +1230,9 @@ check_root
 ## 步骤 1: 环境初始化清理（清除遗留代理状态）
 echo -e "\n\033[33m[1/8] 初始化：清理遗留代理配置...\033[0m"
 
+ensure_runtime_dirs || return 1
+echo -e "  已确认运行目录: conf / temp / logs"
+
 # 清除当前 Shell 可能残留的代理环境变量
 unset http_proxy https_proxy no_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY all_proxy ALL_PROXY
 echo -e "  已重置当前 Shell 代理环境变量"
@@ -1169,8 +1285,12 @@ fi
 ## 步骤 4: 下载 Clash 订阅配置并生成配置文件
 if [[ "$USE_LOCAL_CONFIG" == "true" ]]; then
     echo -e "\n\033[33m[4/8] 使用本地代理配置...\033[0m"
-    echo -e "  \033[32m[√] 已跳过订阅下载，直接加载 Conf_Dir/config.yaml\033[0m"
-    
+    select_local_config_file || return 1
+    if ! validate_local_config_file "$LOCAL_CONFIG_SOURCE" "$Conf_Dir/config.yaml"; then
+        return 1
+    fi
+    echo -e "  \033[32m[√] 已跳过订阅下载，已校验并加载本地配置: ${LOCAL_CONFIG_SOURCE#$Server_Dir/}\033[0m"
+
     if [[ "$EXTERNAL_CONTROLLER_ENABLED" == "true" ]]; then
         Work_Dir=$(cd $(dirname ${BASH_SOURCE[0]}); pwd)
         Dashboard_Dir="${Work_Dir}/dashboard/public"
@@ -1184,6 +1304,12 @@ else
 echo -e "\n\033[33m[4/8] 检测订阅地址并下载配置...\033[0m"
 Text1="Clash 订阅地址可访问！"
 Text2="Clash 订阅地址不可访问！"
+
+if [[ -z "$URL" ]]; then
+    echo -e "\033[31m[ERROR] 未设置 CLASH_URL，无法进入在线订阅模式。\033[0m"
+    echo -e "\033[33m  可将本地 .yaml/.yml 放入 conf/、config/ 或仓库根目录，然后选择 L 本地模式。\033[0m"
+    return 1
+fi
 
 if [[ -n "$CLASH_HEADERS" ]]; then
     HTTP_CODE=$(curl -o /dev/null -L -k -sS --retry 5 -m 10 --connect-timeout 10 \
