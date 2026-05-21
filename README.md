@@ -4,6 +4,15 @@
 
 ## ✨ 新增功能
 
+### 🆕 2026-05 更新（稳定性与脚本一致性）
+
+- 修复 `start.sh` 中代理节点 JSON 解析的问题，避免正常 API 返回下仍拿不到节点列表。
+- 节点切换请求会正确转义节点名，兼容包含引号、反斜杠或特殊字符的节点名称。
+- 启动、停止、重启时只清理当前项目目录下的 Clash 进程，避免误伤系统中其他 Clash 实例。
+- GPT/Codex/Google 连通性测试改为多次采样探测，明确区分“当前采样失败”和“网络一定不可达”。
+- `shutdown.sh` / `restart.sh` 已按增强版逻辑整理，支持无残留进程时正常退出，并提供更明确的错误提示。
+- README 补充本地配置模式、入口脚本职责和常见排查路径。
+
 ### 🆕 2026-04 更新（`start.sh` 交互增强）
 
 - `start.sh` 现为推荐入口：支持启动前自动清理遗留代理状态和残留进程。
@@ -19,38 +28,15 @@
 - API 鉴权失败（`Unauthorized`）时，会自动尝试读取当前 `config.yaml` 的 `secret` 重试。
 - 启动末尾自动执行 `curl -x` 代理连通测试，默认测试 GPT/Codex（OpenAI API + ChatGPT Web），也可选择 Google 204 或全部测试。
 
-### 🎯 自动化配置脚本 (`auto_proxy.sh`)
+## 项目结构与入口
 
-一个强大的交互式脚本，自动化完成 Clash 的配置和管理：
+当前推荐入口是 `source ./start.sh`。它负责订阅管理、配置生成、本地配置加载、启动 Clash、选择节点、切换模式、连通性测试和退出清理。
 
-#### 主要特性：
+`clashctl.sh` 是运行中控制脚本，适合在另一个终端查看状态、切换节点、切换模式或输出代理环境变量。
 
-1. **📋 订阅管理**
-   - 支持多个订阅地址保存和切换
-   - 自动验证订阅地址有效性
-   - 显示流量使用情况和过期时间
-   - 支持添加、选择、删除订阅
+`shell_proxy.sh` 负责让新终端自动同步代理环境变量。`start.sh` 会把它写入 `~/.bashrc` / `~/.zshrc`。
 
-2. **🔐 自动化 Secret 管理**
-   - 自动捕获并保存 Secret
-   - 持久化存储到 `~/.clash_secret`
-   - 自动加载到 `.bashrc`，下次登录自动可用
-
-3. **🌐 智能节点选择**
-   - 显示所有可用代理节点
-   - 显示节点延迟信息
-   - 支持多种配置文件格式
-   - 交互式选择节点
-
-4. **⚙️ 代理模式选择**
-   - Rule - 规则模式（根据规则自动选择）
-   - Global - 全局代理（所有流量走代理）
-   - Direct - 直连模式（所有流量直连）
-
-5. **✅ 连接测试**
-   - 自动测试 Google 连接
-   - 显示响应时间
-   - 失败时提供重试选项
+`auto_proxy.sh` 是早期自动化脚本，仍保留用于兼容；新功能优先维护在 `start.sh` 和 `clashctl.sh`。
 
 ## 🚀 快速开始
 
@@ -75,7 +61,7 @@ source ./start.sh
 5. 测试连接
 6. 进入运行中控制台，可随时重新选择节点或切换模式
 
-ps:第一次连接可能出现找不到订阅选项，确保链接正确的前提下，可以重新运行脚本即可解决问题sudo bash auto_proxy.sh
+如果没有订阅，或订阅地址暂时不可达，可以把 Clash YAML 配置放到 `conf/`、`config/` 或项目根目录，启动时选择本地模式。
 
 ### 传统使用方式
 
@@ -92,9 +78,8 @@ source start.sh
 # 可选：手动控制当前终端代理
 proxy_on
 
-# 停止服务
-sudo bash shutdown.sh
-proxy_off
+# 停止服务并清理当前终端代理变量
+source shutdown.sh
 ```
 
 说明：`start.sh` 需要使用 `source`（或 `. start.sh`）执行，才能在当前 Shell 中正确应用和清理代理环境变量。
@@ -133,7 +118,7 @@ proxy_off
 [4] 新加坡节点1 (80ms)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-请选择代理节点编号 [1-4] (直接回车跳过):
+请选择代理节点编号 [1-4]（必须选择，不可跳过）:
 ```
 
 ## 🔧 高级功能
@@ -151,6 +136,24 @@ curl -x http://127.0.0.1:7890 https://www.youtube.com
 curl -x http://127.0.0.1:7890 https://api.ip.sb/ip
 ```
 
+### 连通性测试说明
+
+`start.sh` 和 `clashctl.sh test` 的 GPT/Codex/Google 测试只是采样探测，不是数学意义上的可达性证明。Clash 节点、DNS、远端限流、出口 IP 风控和瞬时网络波动都可能导致某一次测试失败。
+
+默认每个目标探测 3 次。你可以按需要调整：
+
+```bash
+# 每个目标探测 5 次，每次间隔 2 秒
+CLASH_TEST_ATTEMPTS=5 CLASH_TEST_DELAY=2 ./clashctl.sh test
+```
+
+结果含义：
+
+- `3/3 次探测通过`：当前采样窗口内比较稳定。
+- `1/3 次探测通过`：至少有过可达，说明链路可能波动，不宜直接判定不可用。
+- `0/3 次探测未通过`：当前采样窗口内未探测到成功，但仍不能证明目标永久不可达。
+- `HTTP 403`：通常表示网络链路有响应，但当前节点 IP/地区被目标服务拒绝。
+
 ### API 鉴权排查
 
 当代理 `curl -x` 成功但 API 测试失败时，通常是 `secret` 不一致导致：
@@ -164,6 +167,21 @@ curl -x http://127.0.0.1:7890 https://api.ip.sb/ip
 grep -E '^secret:' conf/config.yaml
 cat ~/.clash_secret
 ```
+
+### 本地配置模式
+
+当订阅不可用，或你已经有完整 Clash 配置文件时，可以使用本地模式：
+
+```bash
+# 任意一种位置均可
+cp your-config.yaml conf/
+# 或 mkdir -p config && cp your-config.yaml config/
+# 或 cp your-config.yaml .
+
+source ./start.sh
+```
+
+启动时选择 `L` 后，脚本会先用当前架构的 Clash 二进制校验配置，再写入 `conf/config.yaml` 并注入 Dashboard 和 API `secret`。
 
 ### 环境变量管理
 
@@ -246,12 +264,12 @@ http://127.0.0.1:9090/ui
 
 ## 📁 文件说明
 
-- `auto_proxy.sh` - 自动化配置脚本（新增）
+- `auto_proxy.sh` - 早期自动化配置脚本，保留兼容；推荐优先使用 `start.sh`
 - `clashctl.sh` - 运行中控制脚本：状态、策略组、节点、模式、连通性诊断、代理环境变量
-- `start.sh` - 启动 Clash 服务
+- `start.sh` - 推荐入口：订阅/本地配置、启动、节点选择、策略切换、测试和运行中控制台
 - `shell_proxy.sh` - 终端代理自动同步脚本
-- `shutdown.sh` - 停止 Clash 服务
-- `restart.sh` - 重启 Clash 服务
+- `shutdown.sh` - 停止当前项目的 Clash 服务；通过 `source shutdown.sh` 可同步清理当前 Shell 代理变量
+- `restart.sh` - 使用现有 `conf/config.yaml` 重启当前项目的 Clash 服务
 - `.env.example` - 配置模板
 - `.env` - 本地配置文件（不提交）
 - `conf/config.yaml` - Clash 运行配置文件（不提交）
@@ -263,6 +281,7 @@ http://127.0.0.1:9090/ui
 - `.env` 文件包含订阅地址，已自动添加到 `.gitignore`
 - Secret 保存在用户目录，权限为 600
 - 订阅信息保存在 `~/.clash_subscriptions`，权限为 600
+- `external-controller` 默认监听 `0.0.0.0:9090`。如果机器暴露在不可信网络中，建议在 `.env` 中改为 `127.0.0.1:9090`，或确保防火墙阻止外部访问。
 
 ## 🤝 贡献
 

@@ -326,14 +326,30 @@ test_url() {
     local expect="${3:-}"
     local success_msg="${4:-HTTP 可达}"
     local warn_403="${5:-false}"
-    local output code time err_file ms retry_reason
-    err_file=$(mktemp) || return 1
-    output=$(curl -sS -o /dev/null -w "%{http_code} %{time_total}" \
-        --connect-timeout 8 --max-time 15 \
-        -x "http://127.0.0.1:${CLASH_HTTP_PORT}" "$url" 2>"$err_file" || true)
-    if [[ "$output" =~ ^([0-9]{3})[[:space:]]+([0-9.]+)$ ]]; then
-        code="${BASH_REMATCH[1]}"
-        time="${BASH_REMATCH[2]}"
+    local attempts="${CLASH_TEST_ATTEMPTS:-3}"
+    local delay="${CLASH_TEST_DELAY:-1}"
+    local success_count=0 warn_403_count=0
+    local output code time err_file ms retry_reason last_code="000" last_ms="0" last_err="" last_retry=""
+    local i
+
+    [[ "$attempts" =~ ^[0-9]+$ ]] || attempts=3
+    (( attempts >= 1 )) || attempts=1
+    [[ "$delay" =~ ^[0-9]+$ ]] || delay=1
+
+    for ((i = 1; i <= attempts; i++)); do
+        err_file=$(mktemp) || return 1
+        output=$(curl -sS -o /dev/null -w "%{http_code} %{time_total}" \
+            --connect-timeout 8 --max-time 15 \
+            -x "http://127.0.0.1:${CLASH_HTTP_PORT}" "$url" 2>"$err_file" || true)
+
+        if [[ "$output" =~ ^([0-9]{3})[[:space:]]+([0-9.]+)$ ]]; then
+            code="${BASH_REMATCH[1]}"
+            time="${BASH_REMATCH[2]}"
+        else
+            code="000"
+            time="0"
+        fi
+
         retry_reason=""
         if ! [[ -z "$expect" || "$code" =~ $expect ]] && grep -Eqi 'SSL|TLS|unexpected eof|decode error' "$err_file"; then
             retry_reason="TLS 1.2 fallback"
@@ -352,33 +368,45 @@ test_url() {
         fi
 
         ms=$(awk "BEGIN {printf \"%d\", $time * 1000}" 2>/dev/null || echo "?")
+        last_code="$code"
+        last_ms="$ms"
+        last_retry="$retry_reason"
+        last_err=""
+        [[ -s "$err_file" ]] && last_err=$(tail -1 "$err_file")
+
         if [[ -z "$expect" || "$code" =~ $expect ]]; then
-            if [[ -n "$retry_reason" ]]; then
-                echo -e "${GREEN}✓ ${name}: HTTP ${code}, ${ms}ms，${success_msg}（${retry_reason}）${NC}"
-            else
-                echo -e "${GREEN}✓ ${name}: HTTP ${code}, ${ms}ms，${success_msg}${NC}"
-            fi
-            rm -f "$err_file"
-            return 0
+            ((success_count++))
+        elif [[ "$warn_403" == "true" && "$code" == "403" ]]; then
+            ((warn_403_count++))
         fi
 
-        if [[ "$warn_403" == "true" && "$code" == "403" ]]; then
-            echo -e "${YELLOW}! ${name}: HTTP 403, ${ms}ms，网络可达但当前节点被服务拒绝${NC}"
-            rm -f "$err_file"
-            return 2
-        fi
-
-        echo -e "${YELLOW}! ${name}: HTTP ${code}, ${ms}ms${NC}"
         rm -f "$err_file"
+        (( i < attempts )) && sleep "$delay"
+    done
+
+    local suffix=""
+    [[ -n "$last_retry" ]] && suffix="（${last_retry}）"
+
+    if (( success_count == attempts )); then
+        echo -e "${GREEN}✓ ${name}: ${success_count}/${attempts} 次探测通过，最后一次 HTTP ${last_code}, ${last_ms}ms，${success_msg}${suffix}${NC}"
+        return 0
+    fi
+
+    if (( success_count > 0 )); then
+        echo -e "${YELLOW}! ${name}: ${success_count}/${attempts} 次探测通过，最后一次 HTTP ${last_code}, ${last_ms}ms；链路有过可达，但当前节点可能存在波动${suffix}${NC}"
+        return 0
+    fi
+
+    if (( warn_403_count > 0 )); then
+        echo -e "${YELLOW}! ${name}: ${warn_403_count}/${attempts} 次返回 HTTP 403，网络链路有响应，但当前节点被服务拒绝；这不代表代理端口不可用${NC}"
         return 2
     fi
 
-    if [[ -s "$err_file" ]]; then
-        echo -e "${RED}✗ ${name}: $(tail -1 "$err_file")${NC}"
-    else
-        echo -e "${RED}✗ ${name}: curl failed${NC}"
+    echo -e "${YELLOW}! ${name}: ${attempts}/${attempts} 次探测未通过，最后一次 HTTP ${last_code}, ${last_ms}ms${NC}"
+    if [[ -n "$last_err" ]]; then
+        echo -e "${YELLOW}  curl 错误: ${last_err}${NC}"
     fi
-    rm -f "$err_file"
+    echo -e "${YELLOW}  这只是当前采样窗口内的结果，不能证明目标永久不可达；Clash 节点、DNS、远端限流或临时网络波动都可能造成短时失败。${NC}"
     return 1
 }
 
@@ -391,6 +419,7 @@ test_proxy() {
     echo -e "${GREEN}✓ HTTP 代理端口可用${NC}"
 
     local failed=0
+    echo -e "${YELLOW}说明：以下是多次采样探测，不是“外网一定可达/不可达”的证明。可用 CLASH_TEST_ATTEMPTS 调整次数。${NC}"
     test_url "OpenAI API" "https://api.openai.com/v1/models" '^(200|401)$' "OpenAI API 可达（未带 API Key 返回 401 属正常）" true || failed=1
     test_url "ChatGPT Web" "https://chatgpt.com/cdn-cgi/trace" '^(200)$' "ChatGPT Web 可达" true || failed=1
     test_url "Google 204" "https://www.gstatic.com/generate_204" '^(204|200)$' "Google 204 探针可达" false || failed=1
@@ -416,6 +445,7 @@ usage() {
 常用:
   ./clashctl.sh switch AI_Services_ChatGPT_Claude "🇨🇳 Taiwan | 01"
   ./clashctl.sh mode global
+  CLASH_TEST_ATTEMPTS=5 CLASH_TEST_DELAY=2 ./clashctl.sh test
   eval "\$(./clashctl.sh env)"
 EOF
 }

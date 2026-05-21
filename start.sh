@@ -689,7 +689,7 @@ extract_selector_and_nodes() {
     local parsed=""
 
     if command -v python3 >/dev/null 2>&1; then
-        parsed=$(printf '%s' "$proxies_json" | python3 - << 'PY' 2>/dev/null
+        parsed=$(printf '%s' "$proxies_json" | python3 -c '
 import json
 import sys
 
@@ -728,8 +728,7 @@ for node in proxies[group].get("all", []):
     if not node or node in {"DIRECT", "REJECT"}:
         continue
     print(node)
-PY
-)
+' 2>/dev/null)
     fi
 
     if [[ -z "$parsed" ]]; then
@@ -751,20 +750,24 @@ PY
 
 apply_proxy_selection() {
     local proxy_name="$1"
-    local group_path http_code
+    local group_path http_code proxy_json escaped_proxy
 
     [[ -z "$SELECTOR_GROUP" ]] && return 1
 
     if command -v python3 >/dev/null 2>&1; then
         group_path=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$SELECTOR_GROUP" 2>/dev/null)
+        proxy_json=$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1], ensure_ascii=False))' "$proxy_name" 2>/dev/null)
     else
         group_path="${SELECTOR_GROUP// /%20}"
+        escaped_proxy="${proxy_name//\\/\\\\}"
+        escaped_proxy="${escaped_proxy//\"/\\\"}"
+        proxy_json="\"${escaped_proxy}\""
     fi
 
     http_code=$(curl -sS -o /dev/null -w "%{http_code}" -X PUT \
         -H "Authorization: Bearer ${Secret}" \
         -H "Content-Type: application/json" \
-        -d "{\"name\":\"${proxy_name}\"}" \
+        -d "{\"name\":${proxy_json}}" \
         "${CLASH_API_URL}/proxies/${group_path}" 2>/dev/null || true)
 
     if echo "$http_code" | grep -Eq '^2[0-9]{2}$'; then
@@ -976,6 +979,12 @@ select_proxy_mode() {
 test_proxy_connection() {
     local timeout=10
     local retry test_selection failed=0
+    local attempts="${CLASH_TEST_ATTEMPTS:-3}"
+    local delay="${CLASH_TEST_DELAY:-1}"
+
+    [[ "$attempts" =~ ^[0-9]+$ ]] || attempts=3
+    (( attempts >= 1 )) || attempts=1
+    [[ "$delay" =~ ^[0-9]+$ ]] || delay=1
 
     run_proxy_test_url() {
         local name="$1"
@@ -984,28 +993,14 @@ test_proxy_connection() {
         local success_msg="${4:-HTTP 可达}"
         local warn_403="${5:-false}"
         local tmp_err curl_result http_code time_total ms retry_reason
+        local success_count=0 warn_403_count=0
+        local last_code="000" last_ms="0" last_err="" last_retry=""
+        local i
 
-        tmp_err=$(mktemp) || return 1
-        curl_result=$(curl -sS -o /dev/null \
-            -w "%{http_code} %{time_total}" \
-            --connect-timeout "$timeout" --max-time "$timeout" \
-            -x "http://127.0.0.1:${CLASH_HTTP_PORT}" "$url" 2>"$tmp_err" || true)
-
-        if [[ "$curl_result" =~ ^([0-9]{3})[[:space:]]+([0-9.]+)$ ]]; then
-            http_code="${BASH_REMATCH[1]}"
-            time_total="${BASH_REMATCH[2]}"
-        else
-            http_code="000"
-            time_total="0"
-        fi
-
-        retry_reason=""
-        if ! [[ "$http_code" =~ $expected_re ]] && grep -Eqi 'SSL|TLS|unexpected eof|decode error' "$tmp_err"; then
-            retry_reason="TLS 1.2 fallback"
-            : > "$tmp_err"
+        for ((i = 1; i <= attempts; i++)); do
+            tmp_err=$(mktemp) || return 1
             curl_result=$(curl -sS -o /dev/null \
                 -w "%{http_code} %{time_total}" \
-                --tls-max 1.2 \
                 --connect-timeout "$timeout" --max-time "$timeout" \
                 -x "http://127.0.0.1:${CLASH_HTTP_PORT}" "$url" 2>"$tmp_err" || true)
 
@@ -1016,38 +1011,74 @@ test_proxy_connection() {
                 http_code="000"
                 time_total="0"
             fi
-        fi
 
-        ms=$(awk "BEGIN {printf \"%d\", $time_total * 1000}" 2>/dev/null || echo "?")
+            retry_reason=""
+            if ! [[ "$http_code" =~ $expected_re ]] && grep -Eqi 'SSL|TLS|unexpected eof|decode error' "$tmp_err"; then
+                retry_reason="TLS 1.2 fallback"
+                : > "$tmp_err"
+                curl_result=$(curl -sS -o /dev/null \
+                    -w "%{http_code} %{time_total}" \
+                    --tls-max 1.2 \
+                    --connect-timeout "$timeout" --max-time "$timeout" \
+                    -x "http://127.0.0.1:${CLASH_HTTP_PORT}" "$url" 2>"$tmp_err" || true)
 
-        if [[ "$http_code" =~ $expected_re ]]; then
-            if [[ -n "$retry_reason" ]]; then
-                echo -e "✓ ${name} 测试通过：HTTP ${http_code}，响应时间: ${ms}ms，${success_msg}（${retry_reason}）"
-            else
-                echo -e "✓ ${name} 测试通过：HTTP ${http_code}，响应时间: ${ms}ms，${success_msg}"
+                if [[ "$curl_result" =~ ^([0-9]{3})[[:space:]]+([0-9.]+)$ ]]; then
+                    http_code="${BASH_REMATCH[1]}"
+                    time_total="${BASH_REMATCH[2]}"
+                else
+                    http_code="000"
+                    time_total="0"
+                fi
             fi
+
+            ms=$(awk "BEGIN {printf \"%d\", $time_total * 1000}" 2>/dev/null || echo "?")
+            last_code="$http_code"
+            last_ms="$ms"
+            last_retry="$retry_reason"
+            last_err=""
+            [[ -s "$tmp_err" ]] && last_err=$(tail -1 "$tmp_err")
+
+            if [[ "$http_code" =~ $expected_re ]]; then
+                ((success_count++))
+            elif [[ "$warn_403" == "true" && "$http_code" == "403" ]]; then
+                ((warn_403_count++))
+            fi
+
             rm -f "$tmp_err"
+            (( i < attempts )) && sleep "$delay"
+        done
+
+        local suffix=""
+        [[ -n "$last_retry" ]] && suffix="（${last_retry}）"
+
+        if (( success_count == attempts )); then
+            echo -e "✓ ${name} 探测通过：${success_count}/${attempts} 次成功，最后一次 HTTP ${last_code}，响应时间: ${last_ms}ms，${success_msg}${suffix}"
             return 0
         fi
 
-        if [[ "$warn_403" == "true" && "$http_code" == "403" ]]; then
-            echo -e "\033[33m[!] ${name} 网络可达但服务拒绝当前节点：HTTP 403，响应时间: ${ms}ms\033[0m"
+        if (( success_count > 0 )); then
+            echo -e "\033[33m[!] ${name} 部分探测通过：${success_count}/${attempts} 次成功，最后一次 HTTP ${last_code}，响应时间: ${last_ms}ms；链路有过可达，但当前节点可能存在波动${suffix}\033[0m"
+            return 0
+        fi
+
+        if (( warn_403_count > 0 )); then
+            echo -e "\033[33m[!] ${name} ${warn_403_count}/${attempts} 次返回 HTTP 403：网络链路有响应，但当前节点被服务拒绝。\033[0m"
             echo -e "\033[33m    这通常不是代理没走通，而是当前节点 IP/地区被 ChatGPT/OpenAI 拒绝。\033[0m"
-            rm -f "$tmp_err"
             return 2
         fi
 
-        echo -e "\033[33m[!] ${name} 测试未通过：HTTP ${http_code}，响应时间: ${ms}ms\033[0m"
-        if [[ -s "$tmp_err" ]]; then
-            echo -e "\033[33m    curl 错误: $(tail -1 "$tmp_err")\033[0m"
-        elif [[ "$http_code" == "000" ]]; then
-            echo -e "\033[33m    curl 未返回具体错误，常见原因是节点不可用、远端断开或 DNS 未经代理。\033[0m"
+        echo -e "\033[33m[!] ${name} ${attempts}/${attempts} 次探测未通过：最后一次 HTTP ${last_code}，响应时间: ${last_ms}ms\033[0m"
+        if [[ -n "$last_err" ]]; then
+            echo -e "\033[33m    curl 错误: ${last_err}\033[0m"
+        elif [[ "$last_code" == "000" ]]; then
+            echo -e "\033[33m    curl 未返回具体错误，常见原因是节点临时不可用、远端断开或 DNS 未经代理。\033[0m"
         fi
-        rm -f "$tmp_err"
+        echo -e "\033[33m    这只是当前采样窗口内的结果，不能证明目标永久不可达；Clash 节点和外网服务都可能短时波动。\033[0m"
         return 1
     }
 
     echo -e "\n\033[33m[8/8] 正在测试代理连接...\033[0m"
+    echo -e "\033[33m说明：以下是 ${attempts} 次采样探测，不是“外网一定可达/不可达”的证明。可用 CLASH_TEST_ATTEMPTS 调整次数。\033[0m"
 
     echo -e "\n可用测试目标："
     echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -1202,9 +1233,9 @@ _clash_cleanup() {
         sleep 1
         kill -9 "$_CLASH_PID" 2>/dev/null
     fi
-    # 兜底：清理所有 clash-linux 残留进程（包括其他用户/root 启动的）
-    pkill -f 'clash-linux' 2>/dev/null
-    sudo pkill -f 'clash-linux' 2>/dev/null
+    # 兜底：只清理当前项目目录下的 Clash 进程，避免影响系统上的其他 Clash 实例。
+    pkill -f "${Server_Dir}/bin/clash-linux" 2>/dev/null
+    sudo pkill -f "${Server_Dir}/bin/clash-linux" 2>/dev/null
 
     # 清除当前 Shell 的代理环境变量
     unset http_proxy https_proxy no_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY all_proxy ALL_PROXY
@@ -1243,15 +1274,15 @@ if [[ -f /etc/profile.d/clash.sh ]]; then
     echo -e "  已清空 /etc/profile.d/clash.sh"
 fi
 
-# 关闭已有的 Clash 进程（防止端口冲突或配置冲突，包括其他用户/root 启动的进程）
-_existing_pids=$(pgrep -f 'clash-linux' 2>/dev/null)
+# 关闭已有的本项目 Clash 进程（防止端口冲突或配置冲突）
+_existing_pids=$(pgrep -f "${Server_Dir}/bin/clash-linux" 2>/dev/null)
 if [[ -n "$_existing_pids" ]]; then
     echo -e "  发现残留 Clash 进程 (PID: $_existing_pids)，正在关闭..."
-    pkill -f 'clash-linux' 2>/dev/null
-    sudo pkill -f 'clash-linux' 2>/dev/null
+    pkill -f "${Server_Dir}/bin/clash-linux" 2>/dev/null
+    sudo pkill -f "${Server_Dir}/bin/clash-linux" 2>/dev/null
     sleep 1
-    pkill -9 -f 'clash-linux' 2>/dev/null
-    sudo pkill -9 -f 'clash-linux' 2>/dev/null
+    pkill -9 -f "${Server_Dir}/bin/clash-linux" 2>/dev/null
+    sudo pkill -9 -f "${Server_Dir}/bin/clash-linux" 2>/dev/null
     echo -e "  已关闭残留 Clash 进程"
 fi
 unset _existing_pids
